@@ -10,12 +10,10 @@ import argparse
 # port install py27-requests
 import requests
 
-
 import subprocess
 import base64
 import ndn
 import time
-
 
 ################################################################################
 ###                                CONFIG                                    ###
@@ -34,17 +32,25 @@ class Signer(object):
         query = \
             ndn.Name('/cert-requests/get') \
             .append(str(site_prefix)) \
-            .append(str(int(time.mktime (time.gmtime()))))
+            .append(str(int(time.mktime(time.gmtime()))))
 
-        p = subprocess.Popen(["ndnop-tool", "sign"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        p = subprocess.Popen(["ndnop-tool", "sign"], 
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         signature = p.communicate(query.toWire())
 
-        query = query.append(signature)
-        http_request = "%s%s" % (URL, str(query))
+        query = query.append(signature[0])
+
+        http_request = "%s/cert-requests/get/" % URL
 
         try:
-            r = requests.get(http_request)
+            r = requests.post(http_request,
+                              data={
+                                  'keyLocator': str(site_prefix),
+                                  'timestamp':  str(query[3]),
+                                  'signature':  base64.b64encode(signature[0])
+                                  })
         except:
+            raise
             print "ERROR: error while communicating with the server"
             return
             
@@ -61,7 +67,7 @@ class Signer(object):
             print "    Full Name:    %s" % req['fullname']
             print "    Organization: %s" % req['organization']
             print "    Email:        %s" % req['email']
-            print "    Homepage:     %s" % req['homepage']
+            print "    Homepage:     %s" % req['homeurl']
             print "    Group:        %s" % req['group']
             print "    Advisor:      %s" % req['advisor']
 
@@ -72,7 +78,6 @@ class Signer(object):
                 print "will deny request"
                 # denial(each);
 
-                
 def confirm(prompt, resp):
     if resp:
         prompt = '%s [%s]|%s: ' % (prompt, 'y', 'n')
@@ -167,5 +172,5 @@ def confirm(prompt, resp):
 # 			break;
 
 if __name__ == "__main__":
-    site_prefix = ndn.Name(subprocess.check_output(["ndn-get-default"]))
+    site_prefix = ndn.Name(subprocess.check_output(["ndn-get-default", "-q"]))
     Signer(site_prefix).run()    
