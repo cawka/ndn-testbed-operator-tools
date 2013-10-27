@@ -16,12 +16,15 @@ import ndn
 import time
 import datetime
 import re
+import socket
 
 ################################################################################
 ###                                CONFIG                                    ###
 ################################################################################
 
 URL = "http://ndncert.named-data.net:5000"
+REPO_HOST = "localhost"
+REPO_PORT = 7376
 
 ################################################################################
 ################################################################################
@@ -36,7 +39,7 @@ class Signer(object):
             .append(str(site_prefix)) \
             .append(str(int(time.mktime(time.gmtime()))))
 
-        p = subprocess.Popen(["ndnop-tool", "sign"], 
+        p = subprocess.Popen(["ndnsec-operator-tool", "sign"],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         signature = p.communicate(query.toWire())
 
@@ -54,14 +57,18 @@ class Signer(object):
         except:
             print "ERROR: error while communicating with the server"
             return
-            
+
         if r.status_code != 200:
             print "ERROR: request not authorized or system is temporarily down"
             return
 
         cert_requests = r.json()
 
+        count = 0
+        issued = 0
+        rejected = 0
         for req in cert_requests:
+            count += 1
             certData = ndn.Data.fromWire(base64.b64decode(req['cert_request']))
 
             print " >> Certificate request [%s] << " % certData.name[:-2]
@@ -74,23 +81,32 @@ class Signer(object):
 
             if confirm("Do you certify the above information?", resp=False):
                 cert = self.issueCertificate(req)
-                http_request = "%s/cert/submit/" % URL
-                try:
-                    r = requests.post(http_request,
-                                      data={
-                                          'data': cert
-                                          })
-                    if r.status_code != 200:
-                        print "ERROR: certificate submission failed"
-                        print r.text
-                    else:
-                        print "OK. Certificate has been issued"
-                except:
-                    print "ERROR: error while communicating with the server"
-
+                decision = "issue"
+                self.publishCertificate(cert)
+                issued += 1
             else:
-                print "will deny request"
-                # denial(each);
+                cert = self.denyCertificate(req)
+                decision = "reject"
+                rejected += 1
+
+            http_request = "%s/cert/submit/" % URL
+            try:
+                r = requests.post(http_request,
+                                  data={
+                                      'data': cert
+                                      })
+                if r.status_code != 200:
+                    print "ERROR: failed to upload decision to the server"
+                    print r.text
+                else:
+                    print "OK. Decision [%s] has been uploaded to the server" % decision
+            except:
+                print "ERROR: error while communicating with the server"
+
+        if count == 0:
+            print "DONE: No pending certificate requests"
+        else:
+            print "DONE: Processed %d requests, %d issued, %d rejected" % (count, issued, rejected)
 
     def issueCertificate(self, request):
         today = datetime.datetime.utcnow()
@@ -98,7 +114,7 @@ class Signer(object):
         not_before = (today - datetime.timedelta(days=1)  ).strftime('%Y%m%d%H%M%S')
         not_after  = (today + datetime.timedelta(days=365)).strftime('%Y%m%d%H%M%S')
 
-        cmdline = ['ndn-certgen', 
+        cmdline = ['ndnsec-certgen',
                    '--not-before', not_before,
                    '--not-after',  not_after,
                    '--subject-name', sanitize(request['fullname']),
@@ -111,18 +127,40 @@ class Signer(object):
                             '2.5.4.80',             sanitize(request['advisor'])
                             ),
                    '--sign-id', str(self.site_prefix),
-                   '--request', '-']
+                   '--request', '-'
+                   ]
 
         p = subprocess.Popen(cmdline, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         cert, err = p.communicate(request['cert_request'])
         return cert.rstrip()
+
+    def denyCertificate(self, request):
+        cmdline = ['ndnsec-certgen',
+                   '--nack',
+                   '--sign-id', str(self.site_prefix),
+                   '--request', '-'
+                   ]
+
+        p = subprocess.Popen(cmdline, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        cert, err = p.communicate(request['cert_request'])
+        return cert.rstrip()
+
+    def publishCertificate(self, certificate):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((REPO_HOST, int(REPO_PORT)))
+
+            sock.send(base64.b64decode(certificate))
+        except Exception,e:
+            print e
+            print "ERROR: an error occurred while publishing certificate"
 
 def confirm(prompt, resp):
     if resp:
         prompt = '%s [%s]|%s: ' % (prompt, 'y', 'n')
     else:
         prompt = '%s [%s]|%s: ' % (prompt, 'n', 'y')
-        
+
     while True:
         ans = raw_input(prompt)
         if not ans:
@@ -139,27 +177,10 @@ def sanitize(value):
     # Allow only a very limited set of characters as a value
     return re.sub(r'[^a-zA-Z0-9.,\-!@#$%&*()\\/<>{}[]\|:`~ ]', r'', value)
 
-# def denial(_input):
-#     _keyname = get_info(_input,"ndn-name");
-#     _keyname = "/ndn/ucla.edu/philip/KSK-1380665656";
-#     _keyname_split = _keyname.split('/');
-#     _sign_id_split = _sign_id.split('/');
-#     _keyname_new = "";
-    
-#     for i in range(1, len(_sign_id_split)):
-#         if (_keyname_split[i] == _sign_id_split[i]):
-#             _keyname_new += '/';
-#             _keyname_new += _keyname_split[i];
-#         else:
-#             break;
-#     _keyname_new += '/KEY';
-#     for j in range(i+1,len(_keyname_split)):
-#      	_keyname_new += '/';
-#     	_keyname_new += _keyname_split[j];
-    
-#     _s = "./build/opt-tool nack " + _keyname_new + "  "+ _sign_id;
-#     os.system(_s);
-
 if __name__ == "__main__":
-    site_prefix = ndn.Name(subprocess.check_output(["ndn-get-default", "-q"]))
-    Signer(site_prefix).run()    
+    site_prefix = ndn.Name(subprocess.check_output(["ndnsec-get-default", "-q"]))
+    try:
+        Signer(site_prefix).run()
+    except KeyboardInterrupt:
+        print ""
+        pass
