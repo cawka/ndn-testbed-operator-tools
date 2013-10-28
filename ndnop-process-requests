@@ -22,7 +22,7 @@ import socket
 ###                                CONFIG                                    ###
 ################################################################################
 
-URL = "http://ndncert.named-data.net:5000"
+URL = "http://ndncert.named-data.net"
 REPO_HOST = "localhost"
 REPO_PORT = 7376
 
