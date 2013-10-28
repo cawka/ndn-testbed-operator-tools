@@ -41,9 +41,12 @@ class Signer(object):
 
         p = subprocess.Popen(["ndnsec-operator-tool", "sign"],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        signature = p.communicate(query.toWire())
+        signature, cerr = p.communicate(query.toWire())
+        if p.returncode != 0:
+            print "ERROR: cannot generate signature, please submit your certification request to NDN testbed root"
+            return
 
-        query = query.append(signature[0])
+        query = query.append(signature)
 
         http_request = "%s/cert-requests/get/" % URL
 
@@ -100,6 +103,7 @@ class Signer(object):
                     print r.text
                 else:
                     print "OK. Decision [%s] has been uploaded to the server" % decision
+                    print r.text
             except:
                 print "ERROR: error while communicating with the server"
 
